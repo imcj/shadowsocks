@@ -22,6 +22,8 @@
 
 from __future__ import with_statement
 import sys
+import time
+import threading
 if sys.version_info < (2, 6):
     import simplejson as json
 else:
@@ -45,7 +47,6 @@ import getopt
 import encrypt
 import utils
 
-
 def send_all(sock, data):
     bytes_sent = 0
     while True:
@@ -61,7 +62,47 @@ class ThreadingTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     allow_reuse_address = True
 
 
+
+class Connection(object):
+    instance = None
+    def __init__(self, ss_server, ss_server_port, spawn_number = 100):
+        self.ss_server = ss_server
+        self.ss_server_port = ss_server_port
+        self.spawn_number = spawn_number
+        self.connections = []
+
+    def get(self):
+        try:
+            return self.connections.pop()
+        except IndexError:
+            return self.create_connection()
+
+    def create_connection(self):
+        return socket.create_connection((self.ss_server, self.ss_server_port))
+
+    def thread_spawn(self):
+        def _spawn():
+            num = self.spawn_number - len(self.connections)
+            for x in xrange(num):
+                self.connections.append(self.create_connection())
+        while True:
+            _spawn()
+            time.sleep(1)
+
+    def spawn(self):
+        t = threading.Thread(target=self.thread_spawn)
+        t.start()
+
+    @staticmethod
+    def shared():
+        global SERVER, REMOTE_PORT
+        if not Connection.instance:
+            Connection.instance = Connection(SERVER, REMOTE_PORT)
+
+        return Connection.instance
+
 class Socks5Server(SocketServer.StreamRequestHandler):
+
     def handle_tcp(self, sock, remote):
         try:
             fdset = [sock, remote]
@@ -132,7 +173,8 @@ class Socks5Server(SocketServer.StreamRequestHandler):
                 reply += socket.inet_aton('0.0.0.0') + struct.pack(">H", 2222)
                 self.wfile.write(reply)
                 # reply immediately
-                remote = socket.create_connection((SERVER, REMOTE_PORT))
+                # remote = socket.create_connection((SERVER, REMOTE_PORT))
+                remote = Connection.shared().get()
                 self.send_encrypt(remote, addr_to_send)
                 logging.info('connecting %s:%d' % (addr, port[0]))
             except socket.error, e:
@@ -208,6 +250,7 @@ def main():
     utils.check_config(config)
         
     encrypt.init_table(KEY, METHOD)
+    Connection.shared().spawn()
 
     try:
         if IPv6:
